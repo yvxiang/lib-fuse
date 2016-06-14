@@ -876,10 +876,12 @@ static void set_stat(struct fuse *f, fuse_ino_t nodeid, struct stat *stbuf)
 	if (f->conf.set_mode)
 		stbuf->st_mode = (stbuf->st_mode & S_IFMT) |
 				 (0777 & ~f->conf.umask);
+    /*
 	if (f->conf.set_uid)
 		stbuf->st_uid = f->conf.uid;
 	if (f->conf.set_gid)
 		stbuf->st_gid = f->conf.gid;
+        */
 }
 
 static struct fuse *req_fuse(fuse_req_t req)
@@ -1813,6 +1815,8 @@ static void update_stat(struct node *node, const struct stat *stbuf)
 	curr_time(&node->stat_updated);
 }
 
+static struct fuse_context_i *fuse_get_context_internal(void);
+
 static int lookup_path(struct fuse *f, fuse_ino_t nodeid,
 		       const char *name, const char *path,
 		       struct fuse_entry_param *e, struct fuse_file_info *fi)
@@ -1846,6 +1850,11 @@ static int lookup_path(struct fuse *f, fuse_ino_t nodeid,
 					(unsigned long) e->ino);
 		}
 	}
+    //reset uid here
+	struct fuse_context_i *c = fuse_get_context_internal();
+	e->attr.st_uid = c->ctx.uid;
+    e->attr.st_gid = c->ctx.gid;
+
 	return res;
 }
 
@@ -1984,6 +1993,9 @@ static void fuse_lib_lookup(fuse_req_t req, fuse_ino_t parent,
 	char *path;
 	int err;
 	struct node *dot = NULL;
+    const struct fuse_ctx *ctx = fuse_req_ctx(req);
+    uid_t uid = ctx->uid;
+    gid_t gid = ctx->gid;
 
 	if (name[0] == '.') {
 		int len = strlen(name);
@@ -2022,6 +2034,9 @@ static void fuse_lib_lookup(fuse_req_t req, fuse_ino_t parent,
 			e.entry_timeout = f->conf.negative_timeout;
 			err = 0;
 		}
+        //reset uid & gid here
+        e.attr.st_uid = uid;
+        e.attr.st_gid = gid;
 		fuse_finish_interrupt(f, req, &d);
 		free_path(f, parent, path);
 	}
@@ -2051,13 +2066,20 @@ static void fuse_lib_getattr(fuse_req_t req, fuse_ino_t ino,
 	struct stat buf;
 	char *path;
 	int err;
+    const struct fuse_ctx *ctx = fuse_req_ctx(req);
+    uid_t uid = ctx->uid;
+    gid_t gid = ctx->gid;
 
-	memset(&buf, 0, sizeof(buf));
+    memset(&buf, 0, sizeof(buf));
 
 	if (fi != NULL)
 		err = get_path_nullok(f, ino, &path);
 	else
 		err = get_path(f, ino, &path);
+    int len = strlen(path);
+    char* path_name = (char*)malloc(sizeof(char) * (len + 1));
+    memcpy(path_name, path, strlen(path) + 1);
+
 	if (!err) {
 		struct fuse_intr_data d;
 		fuse_prepare_interrupt(f, req, &d);
@@ -2075,7 +2097,10 @@ static void fuse_lib_getattr(fuse_req_t req, fuse_ino_t ino,
 			pthread_mutex_unlock(&f->lock);
 		}
 		set_stat(f, ino, &buf);
-		fuse_reply_attr(req, &buf, f->conf.attr_timeout);
+        // re-set uid & gid
+        buf.st_uid = uid;
+        buf.st_gid = gid;
+        fuse_reply_attr(req, &buf, f->conf.attr_timeout);
 	} else
 		reply_err(req, err);
 }
